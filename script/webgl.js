@@ -1,3 +1,4 @@
+export { WebGLUtility, WebGLOrbitCamera, WebGLMath, Mat4, Vec3, Vec2, Qtn, WebGLGeometry };
 
 /**
  * WebGL の API を目的別にまとめたユーティリティクラス

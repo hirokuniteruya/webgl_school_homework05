@@ -1,24 +1,16 @@
-
-// = 013 ======================================================================
-// 頂点の持つ法線と、ライトの向きを意味するベクトルとで内積を取っただけでは一見
-// するとうまくいっているようでも、モデルを回転させたり移動させたりした場合に正
-// しい結果が得られません。
-// これは「頂点の位置が変化しているのに、法線はそのままになっている」ためです。
-// これを改善するには、頂点が動いたことによって起こる変化を、法線に対しても適用
-// してやる必要があります。
-// しかし、ここにはやや難しい行列の問題が絡んでくるので……最初に答えだけ書いて
-// しまうと「モデル行列の逆転置行列を用意して法線に乗算する」ことが必要です。
-// なぜこのような計算によって法線が正しく処理できるのかは、ちょっと難しい行列の
-// 話になってしまうので、講義で口頭で補足しますが、正直あまり正確にわかっていな
-// かったとしてもそれほど気にしなくてもよいと思います。
-// ※もちろん興味があれば行列を勉強してみましょう！
-// ============================================================================
+import { WebGLUtility, WebGLOrbitCamera, WebGLMath, Mat4, Vec3, Vec2, Qtn, WebGLGeometry } from './webgl.js';
 
 (() => {
+    // モジュール内コンスタント部
+    const CLOCKHAND_HEIGHT = 1.2;
+
     // webgl.js に記載のクラスを扱いやすいよう変数に入れておく
     const webgl = new WebGLUtility(); // WebGL API をまとめたユーティリティ
-    const math  = WebGLMath;          // 線型代数の各種算術関数群
-    const geo   = WebGLGeometry;      // 頂点ジオメトリを生成する関数群
+    const m = Mat4;                   // 線型代数の各種算術関数群
+    const geo = WebGLGeometry;        // 頂点ジオメトリを生成する関数群
+
+    // WebGLRenderingContext を格納する変数
+    let gl = null;
 
     // 複数の関数で利用する広いスコープが必要な変数を宣言しておく
     let startTime = 0;            // 描画開始時のタイムスタンプ
@@ -26,9 +18,11 @@
     let isEnableDepthTest = true; // 深度テストを有効化するかどうか
     let isSphereRotation = false; // 球体を回転させるかどうか
 
-    let sphere      = null; // 球体のジオメトリ情報
-    let sphereVBO   = null; // 球体用の VBO
-    let sphereIBO   = null; // 球体用の IBO
+    // 各ジオメトリの VBO, IBO, index を格納するオブジェクト
+    let sphere    = {}; // 球体のジオメトリ情報
+    let clockFace = {}; // 時計の文字盤
+    let shaft     = {}; // シャフト（心棒）
+    let clockHand = {} // 針
 
     let attLocation = null; // attribute location
     let attStride   = null; // 頂点属性のストライド
@@ -46,16 +40,17 @@
         const PANE = new Tweakpane({
             container: document.querySelector('#float-layer'),
         });
-        PANE.addInput({'face-culling': isEnableCulling}, 'face-culling')
-        .on('change', (v) => {isEnableCulling = v;});
+        PANE.addInput({ 'face-culling': isEnableCulling }, 'face-culling')
+            .on('change', v => { isEnableCulling = v; });
         PANE.addInput({'depth-test': isEnableDepthTest}, 'depth-test')
-        .on('change', (v) => {isEnableDepthTest = v;});
+            .on('change', v => { isEnableDepthTest = v; });
         PANE.addInput({'sphere-rotation': isSphereRotation}, 'sphere-rotation')
-        .on('change', (v) => {isSphereRotation = v;});
+            .on('change', v => { isSphereRotation = v; });
         // ====================================================================
 
         const canvas = document.getElementById('webgl-canvas');
         webgl.initialize(canvas);
+        gl = webgl.gl;
         const size = Math.min(window.innerWidth, window.innerHeight);
         webgl.width  = size;
         webgl.height = size;
@@ -69,15 +64,13 @@
         };
         camera = new WebGLOrbitCamera(canvas, cameraOption);
 
-        let vs = null;
-        let fs = null;
-        WebGLUtility.loadFile('./shader/main.vert')
-        .then((vertexShaderSource) => {
-            vs = webgl.createShaderObject(vertexShaderSource, webgl.gl.VERTEX_SHADER);
-            return WebGLUtility.loadFile('./shader/main.frag');
-        })
-        .then((fragmentShaderSource) => {
-            fs = webgl.createShaderObject(fragmentShaderSource, webgl.gl.FRAGMENT_SHADER);
+        const promises = [
+            WebGLUtility.loadFile('./shader/main.vert'),
+            WebGLUtility.loadFile('./shader/main.frag'),
+        ];
+        Promise.all(promises).then(shaderSources => {
+            const vs = webgl.createShaderObject(shaderSources[0], gl.VERTEX_SHADER);
+            const fs = webgl.createShaderObject(shaderSources[1], gl.FRAGMENT_SHADER);
             webgl.program = webgl.createProgramObject(vs, fs);
 
             setupGeometry();
@@ -92,29 +85,63 @@
      */
     function setupGeometry(){
         // 球体ジオメトリ情報と VBO、IBO の生成
-        sphere = geo.sphere(32, 32, 1.0, [1.0, 1.0, 1.0, 1.0]);
-        sphereVBO = [
-            webgl.createVBO(sphere.position),
-            webgl.createVBO(sphere.normal),
+        // const sphereData = geo.sphere(32, 32, 1.0, [1.0, 1.0, 1.0, 1.0]);
+        // sphere.vbo = [
+        //     webgl.createVBO(sphereData.position),
+        //     webgl.createVBO(sphereData.normal),
+        // ];
+        // sphere.ibo = webgl.createIBO(sphereData.index);
+        // sphere.index = sphereData.index;
+
+        // 時計の文字盤
+        // const clockFaceData = geo.circle(64, 1.2, [1.0, 1.0, 1.0, 1.0]);
+        const clockFaceData = createClockFace(64, 1.2, [0.8, 1.0, 1.0, 1.0]);
+        clockFace.vbo = [
+            webgl.createVBO(clockFaceData.position),
+            webgl.createVBO(clockFaceData.normal),
+            webgl.createVBO(clockFaceData.color),
         ];
-        sphereIBO = webgl.createIBO(sphere.index);
+        clockFace.ibo = webgl.createIBO(clockFaceData.index);
+        clockFace.index = clockFaceData.index;
+
+        // シャフト
+        const shaftData = geo.cylinder(8, 0.08, 0.15, 0.4, [1.0, 1.0, 1.0, 1.0]);
+        shaft.vbo = [
+            webgl.createVBO(shaftData.position),
+            webgl.createVBO(shaftData.normal),
+            webgl.createVBO(shaftData.color),
+        ];
+        shaft.ibo = webgl.createIBO(shaftData.index);
+        shaft.index = shaftData.index;
+
+        // 針
+        const clockHandData = geo.cylinder(4, 0.02, 0.03, CLOCKHAND_HEIGHT, [0.0, 0.0, 1.0, 1.0]);
+        // const clockHandData = geo.plane(0.05, CLOCKHAND_HEIGHT, [0.0, 1.0, 0.0, 1.0]);
+        console.log('clockHandData: ', clockHandData);
+        clockHand.vbo = [
+            webgl.createVBO(clockHandData.position),
+            webgl.createVBO(clockHandData.normal),
+            webgl.createVBO(clockHandData.color),
+        ];
+        clockHand.ibo = webgl.createIBO(clockHandData.index);
+        clockHand.index = clockHandData.index;
     }
 
     /**
      * 頂点属性のロケーションに関するセットアップを行う
      */
     function setupLocation(){
-        const gl = webgl.gl;
         // attribute location の取得と有効化
         attLocation = [
             gl.getAttribLocation(webgl.program, 'position'),
             gl.getAttribLocation(webgl.program, 'normal'),
+            gl.getAttribLocation(webgl.program, 'color'),
         ];
-        attStride = [3, 3];
+        attStride = [3, 3, 4];
         // uniform 変数のロケーションの取得
         uniLocation = {
             mvpMatrix: gl.getUniformLocation(webgl.program, 'mvpMatrix'),
-            normalMatrix: gl.getUniformLocation(webgl.program, 'normalMatrix'), // 法線変換用行列 @@@
+            normalMatrix: gl.getUniformLocation(webgl.program, 'normalMatrix'), // 法線変換用行列
             lightDirection: gl.getUniformLocation(webgl.program, 'lightDirection'),
         };
     }
@@ -123,19 +150,18 @@
      * レンダリングのためのセットアップを行う
      */
     function setupRendering(){
-        const gl = webgl.gl;
         gl.viewport(0, 0, webgl.width, webgl.height);
         gl.clearColor(0.3, 0.3, 0.3, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-        if(isEnableCulling === true){
+        if (isEnableCulling === true) {
             gl.enable(gl.CULL_FACE);
-        }else{
+        } else {
             gl.disable(gl.CULL_FACE);
         }
-        if(isEnableDepthTest === true){
+        if (isEnableDepthTest === true) {
             gl.enable(gl.DEPTH_TEST);
-        }else{
+        } else {
             gl.disable(gl.DEPTH_TEST);
         }
 
@@ -145,50 +171,14 @@
         const aspect = webgl.width / webgl.height;
         const near = 0.1;
         const far = 20.0;
-        pMatrix = math.mat4.perspective(fovy, aspect, near, far);
-        vpMatrix = math.mat4.multiply(pMatrix, vMatrix);
-    }
-
-    /**
-     * メッシュ情報の更新と描画を行う
-     * @param {number} time - 経過時間
-     */
-    function renderMesh(time){
-        const gl = webgl.gl;
-
-        // 球体の VBO と IBO をバインドする
-        webgl.enableAttribute(sphereVBO, attLocation, attStride);
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, sphereIBO);
-
-        // モデル行列を生成する
-        let mMatrix = math.mat4.identity(math.mat4.create());
-        // フラグが立っている場合は回転させる
-        if(isSphereRotation === true){
-            mMatrix = math.mat4.rotate(mMatrix, time, [0.0, 1.0, 0.0]);
-        }
-
-        // 法線変換用の行列を生成してシェーダに送る @@@
-        // ※モデル行列の逆転置行列
-        const normalMatrix = math.mat4.transpose(math.mat4.inverse(mMatrix));
-        gl.uniformMatrix4fv(uniLocation.normalMatrix, false, normalMatrix);
-
-        // mvp 行列を生成してシェーダに送る
-        const mvpMatrix = math.mat4.multiply(vpMatrix, mMatrix);
-        gl.uniformMatrix4fv(uniLocation.mvpMatrix, false, mvpMatrix);
-
-        // ライトベクトルを uniform 変数としてシェーダに送る
-        gl.uniform3fv(uniLocation.lightDirection, [1.0, 1.0, 1.0]);
-
-        // バインド中の頂点を描画する
-        gl.drawElements(gl.TRIANGLES, sphere.index.length, gl.UNSIGNED_SHORT, 0);
+        pMatrix = m.perspective(fovy, aspect, near, far);
+        vpMatrix = m.multiply(pMatrix, vMatrix);
     }
 
     /**
      * レンダリングを行う
      */
     function render(){
-        const gl = webgl.gl;
-
         // 再帰呼び出しを行う
         requestAnimationFrame(render);
 
@@ -198,8 +188,117 @@
         // レンダリング時のクリア処理など
         setupRendering();
 
+        /* オブジェクトのレンダリング記述域 */
         // メッシュを更新し描画を行う
         renderMesh(nowTime);
     }
+
+    /**
+     * メッシュ情報の更新と描画を行う
+     * @param {number} time - 経過時間
+     */
+     function renderMesh(time){
+        // ライトベクトルを uniform 変数としてシェーダに送る
+        gl.uniform3fv(uniLocation.lightDirection, [1.0, 1.0, 1.0]);
+
+        let mMatrix = m.create();
+        let normalMatrix = null;
+        let mvpMatrix = null;
+
+        const d = new Date();
+        // const angle_hour = 2 * Math.PI * ( d.getHours()   / 12 );
+        // const angle_min  = 2 * Math.PI * ( d.getMinutes() / 60 );
+        const angle_sec  = 2 * Math.PI * ( d.getSeconds() / 60 );
+
+        /* 球体 */
+        // mMatrix = m.identity(mMatrix);
+        // if (isSphereRotation === true) {
+        //     mMatrix = m.rotate(mMatrix, time, [0.0, 1.0, 0.0]);
+        // }
+        // normalMatrix = m.transpose(m.inverse(mMatrix));
+        // mvpMatrix = m.multiply(vpMatrix, mMatrix);
+        // gl.uniformMatrix4fv(uniLocation.normalMatrix, false, normalMatrix);
+        // gl.uniformMatrix4fv(uniLocation.mvpMatrix, false, mvpMatrix);
+        // drawElements(sphere);
+
+        /* 時計の文字盤 */
+        mMatrix = m.identity(mMatrix);
+        mMatrix = m.translate(mMatrix, [0.0, 0.0, -0.1]);
+        normalMatrix = m.transpose(m.inverse(mMatrix));
+        mvpMatrix = m.multiply(vpMatrix, mMatrix);
+        gl.uniformMatrix4fv(uniLocation.normalMatrix, false, normalMatrix);
+        gl.uniformMatrix4fv(uniLocation.mvpMatrix, false, mvpMatrix);
+        drawElements(clockFace);
+
+        /* シャフト */
+        mMatrix = m.identity(mMatrix);
+        if (isSphereRotation === true) {
+            mMatrix = m.rotate(mMatrix, time, [0.0, 0.0, 1.0]);
+        }
+        mMatrix = m.rotate(mMatrix, Math.PI / 2, [1.0, 0.0, 0.0]);
+        normalMatrix = m.transpose(m.inverse(mMatrix));
+        mvpMatrix = m.multiply(vpMatrix, mMatrix);
+        gl.uniformMatrix4fv(uniLocation.normalMatrix, false, normalMatrix);
+        gl.uniformMatrix4fv(uniLocation.mvpMatrix, false, mvpMatrix);
+        drawElements(shaft);
+
+        /* 針 */
+        mMatrix = m.identity(mMatrix);
+        if (isSphereRotation === true) {
+            mMatrix = m.rotate(mMatrix, time, [0.0, 0.0, 1.0]);
+        }
+        mMatrix = m.rotate(mMatrix, angle_sec, [0.0, 0.0, -1.0]);
+        mMatrix = m.translate(mMatrix, [0.0, CLOCKHAND_HEIGHT / 2 - 0.2, 0.0]);
+        normalMatrix = m.transpose(m.inverse(mMatrix));
+        mvpMatrix = m.multiply(vpMatrix, mMatrix);
+        gl.uniformMatrix4fv(uniLocation.normalMatrix, false, normalMatrix);
+        gl.uniformMatrix4fv(uniLocation.mvpMatrix, false, mvpMatrix);
+        drawElements(clockHand);
+
+    }
+
+    /**
+     * VBO, IBO のバインドと、バインド中の頂点の描画を行う
+     * @param {object} geoData - ジオメトリの VBO, IBO, index を格納したオブジェクト
+     */
+    function drawElements(geoData) {
+        // 物体の VBO と IBO をバインドする
+        webgl.enableAttribute(geoData.vbo, attLocation, attStride);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, geoData.ibo);
+        // バインド中の頂点を描画する
+        gl.drawElements(gl.TRIANGLES, geoData.index.length, gl.UNSIGNED_SHORT, 0);
+    }
 })();
 
+/**
+ * WebGLGeometry.circle メソッドの法線の改造版
+ * @param {number} split - 分割数
+ * @param {number} rad - 半径
+ * @param {Array.<number>} color - 色
+ * @returns 時計の文字盤のオブジェクト
+ */
+function createClockFace(split, rad, color){
+    let i, j = 0;
+    let pos = [], nor = [],
+        col = [], st  = [], idx = [];
+    pos.push(0.0, 0.0, 0.0);
+    nor.push(0.0, 0.0, 1.0);
+    col.push(color[0], color[1], color[2], color[3]);
+    st.push(0.5, 0.5);
+    for(i = 0; i < split; i++){
+        let r = Math.PI * 2.0 / split * i;
+        let rx = Math.cos(r);
+        let ry = Math.sin(r);
+        pos.push(rx * rad, ry * rad, 0.0);
+        nor.push(rx / 1.8, ry / 1.8, 1.0);
+        col.push(color[0], color[1], color[2], color[3]);
+        st.push((rx + 1.0) * 0.5, 1.0 - (ry + 1.0) * 0.5);
+        if(i === split - 1){
+            idx.push(0, j + 1, 1);
+        }else{
+            idx.push(0, j + 1, j + 2);
+        }
+        ++j;
+    }
+    return {position: pos, normal: nor, color: col, texCoord: st, index: idx}
+}
