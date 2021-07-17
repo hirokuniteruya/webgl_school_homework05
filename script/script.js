@@ -117,7 +117,6 @@ import { WebGLUtility, WebGLOrbitCamera, WebGLMath, Mat4, Vec3, Vec2, Qtn, WebGL
         // 針
         const clockHandData = geo.cylinder(4, 0.02, 0.03, CLOCKHAND_HEIGHT, [0.0, 0.0, 1.0, 1.0]);
         // const clockHandData = geo.plane(0.05, CLOCKHAND_HEIGHT, [0.0, 1.0, 0.0, 1.0]);
-        console.log('clockHandData: ', clockHandData);
         clockHand.vbo = [
             webgl.createVBO(clockHandData.position),
             webgl.createVBO(clockHandData.normal),
@@ -151,7 +150,7 @@ import { WebGLUtility, WebGLOrbitCamera, WebGLMath, Mat4, Vec3, Vec2, Qtn, WebGL
      */
     function setupRendering(){
         gl.viewport(0, 0, webgl.width, webgl.height);
-        gl.clearColor(0.3, 0.3, 0.3, 1.0);
+        gl.clearColor(0.7, 0.7, 0.7, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
         if (isEnableCulling === true) {
