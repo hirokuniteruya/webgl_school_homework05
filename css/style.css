@@ -10,6 +10,7 @@ html, body {
     width: 100%;
     height: 100%;
     overflow: hidden;
+    background-color: #000;
 }
 
 canvas {
@@ -31,3 +32,19 @@ canvas {
     pointer-events: auto;
 }
 
+.info-panel {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    padding: 16px;
+    border-radius: 4px;
+    background: #fff3;
+    color: #fff8;
+    font-size: 14px;
+    font-family: 'Roboto Mono', 'Source Code Pro', 'Menlo', Courier, monospace;
+}
+
+.info-panel a {
+    color: rgba(113, 158, 255, 0.8);
+    text-decoration: none;
+}
